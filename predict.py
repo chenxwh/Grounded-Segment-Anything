@@ -3,7 +3,7 @@
 
 import os
 import json
-from typing import Any
+from typing import Any, Optional
 import numpy as np
 import random
 import torch
@@ -44,9 +44,9 @@ from models.tag2text import ram
 
 class ModelOutput(BaseModel):
     tags: str
-    rounding_box_img: Path
-    masked_img: Path
     json_data: Any
+    rounding_box_img: Optional[Path]
+    masked_img: Optional[Path]
 
 
 class Predictor(BasePredictor):
@@ -92,6 +92,9 @@ class Predictor(BasePredictor):
         input_image: Path = Input(description="Input image"),
         use_sam_hq: bool = Input(
             description="Use sam_hq instead of SAM for prediction", default=False
+        ),
+        show_visualisation: bool = Input(
+            description="Output rounding box and masks on the image", default=False
         ),
     ) -> ModelOutput:
         """Run a single prediction on the model"""
@@ -139,43 +142,7 @@ class Predictor(BasePredictor):
         pred_phrases = [pred_phrases[idx] for idx in nms_idx]
         print(f"After NMS: {boxes_filt.shape[0]} boxes")
 
-        transformed_boxes = predictor.transform.apply_boxes_torch(
-            boxes_filt, image.shape[:2]
-        ).to(self.device)
-
-        masks, _, _ = predictor.predict_torch(
-            point_coords=None,
-            point_labels=None,
-            boxes=transformed_boxes.to(self.device),
-            multimask_output=False,
-        )
-
-        # draw output image
-        plt.figure(figsize=(10, 10))
-        for mask in masks:
-            show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
-        for box, label in zip(boxes_filt, pred_phrases):
-            show_box(box.numpy(), plt.gca(), label)
-
-        rounding_box_path = "/tmp/automatic_label_output.png"
-        plt.axis("off")
-        plt.savefig(
-            Path(rounding_box_path), bbox_inches="tight", dpi=300, pad_inches=0.0
-        )
-        plt.close()
-
-        # save masks and json data
         value = 0  # 0 for background
-        mask_img = torch.zeros(masks.shape[-2:])
-        for idx, mask in enumerate(masks):
-            mask_img[mask.cpu().numpy()[0] == True] = value + idx + 1
-        plt.figure(figsize=(10, 10))
-        plt.imshow(mask_img.numpy())
-        plt.axis("off")
-        masks_path = "/tmp/mask.png"
-        plt.savefig(masks_path, bbox_inches="tight", dpi=300, pad_inches=0.0)
-        plt.close()
-
         json_data = {
             "tags": tags,
             "mask": [{"value": value, "label": "background"}],
@@ -193,15 +160,48 @@ class Predictor(BasePredictor):
                 }
             )
 
-        json_path = "/tmp/label.json"
-        with open(json_path, "w") as f:
-            json.dump(json_data, f)
+        if show_visualisation:
+            transformed_boxes = predictor.transform.apply_boxes_torch(
+                boxes_filt, image.shape[:2]
+            ).to(self.device)
+            masks, _, _ = predictor.predict_torch(
+                point_coords=None,
+                point_labels=None,
+                boxes=transformed_boxes.to(self.device),
+                multimask_output=False,
+            )
+
+            # draw output image
+            plt.figure(figsize=(10, 10))
+            for mask in masks:
+                show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
+            for box, label in zip(boxes_filt, pred_phrases):
+                show_box(box.numpy(), plt.gca(), label)
+
+            rounding_box_path = "/tmp/automatic_label_output.png"
+            plt.axis("off")
+            plt.savefig(
+                Path(rounding_box_path), bbox_inches="tight", dpi=300, pad_inches=0.0
+            )
+            plt.close()
+
+            # save masks
+            value = 0
+            mask_img = torch.zeros(masks.shape[-2:])
+            for idx, mask in enumerate(masks):
+                mask_img[mask.cpu().numpy()[0] == True] = value + idx + 1
+            plt.figure(figsize=(10, 10))
+            plt.imshow(mask_img.numpy())
+            plt.axis("off")
+            masks_path = "/tmp/mask.png"
+            plt.savefig(masks_path, bbox_inches="tight", dpi=300, pad_inches=0.0)
+            plt.close()
 
         return ModelOutput(
             tags=tags,
-            masked_img=Path(masks_path),
-            rounding_box_img=Path(rounding_box_path),
-            json_data=Path(json_path),
+            json_data=json_data,
+            masked_img=Path(masks_path) if show_visualisation else None,
+            rounding_box_img=Path(rounding_box_path) if show_visualisation else None,
         )
 
 
